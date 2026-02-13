@@ -6,6 +6,13 @@ import * as path from "path"
 const z = tool.schema
 
 /**
+ * Max line length — must match OpenCode's read tool truncation.
+ * Lines longer than this are displayed as `line.substring(0, 2000) + "..."`.
+ * We must hash the truncated form so computeFileHashes matches the read hook.
+ */
+const MAX_LINE_LENGTH = 2000
+
+/**
  * djb2 hash of trimmed line content, truncated to 3 hex chars.
  * 3 hex chars = 4096 values. Collisions are rare and disambiguated by line number.
  */
@@ -16,6 +23,23 @@ function hashLine(content: string): string {
     h = ((h << 5) + h + trimmed.charCodeAt(i)) | 0
   }
   return (h >>> 0).toString(16).slice(-3).padStart(3, "0")
+}
+
+/**
+ * Normalize a hash reference from model output.
+ * Handles: extra whitespace, trailing "|", spaces around ":"
+ * e.g. " 141:d81 " → "141:d81", "141:d81|" → "141:d81", "141: d81" → "141:d81"
+ */
+function normalizeHashRef(ref: string): string {
+  ref = ref.trim()
+  if (ref.endsWith("|")) ref = ref.slice(0, -1).trimEnd()
+  const colonIdx = ref.indexOf(":")
+  if (colonIdx > 0) {
+    const lineNum = ref.slice(0, colonIdx).trim()
+    const hash = ref.slice(colonIdx + 1).trim()
+    return `${lineNum}:${hash}`
+  }
+  return ref
 }
 
 /** Per-file mapping: hash ref (e.g. "42:a3f") → line content */
@@ -32,19 +56,38 @@ interface HashlineEdit {
   content: string
 }
 
+/** Normalize all hash refs in an edit object */
+function normalizeEdit(edit: HashlineEdit): HashlineEdit {
+  return {
+    ...edit,
+    startHash: edit.startHash ? normalizeHashRef(edit.startHash) : undefined,
+    endHash: edit.endHash ? normalizeHashRef(edit.endHash) : undefined,
+    afterHash: edit.afterHash ? normalizeHashRef(edit.afterHash) : undefined,
+  }
+}
+
 export const HashlinePlugin: Plugin = async ({ directory }) => {
   function resolvePath(filePath: string): string {
     if (path.isAbsolute(filePath)) return path.normalize(filePath)
     return path.resolve(directory, filePath)
   }
 
-  /** Read file from disk and compute fresh hashes */
+  /**
+   * Read file from disk and compute fresh hashes.
+   * Lines are truncated before hashing to match OpenCode's read tool output.
+   * Full (untruncated) content is stored for building oldString/patchText.
+   */
   function computeFileHashes(filePath: string): Map<string, string> {
     const content = fs.readFileSync(filePath, "utf-8")
     const lines = content.split("\n")
     const hashes = new Map<string, string>()
     for (let i = 0; i < lines.length; i++) {
-      const hash = hashLine(lines[i])
+      // Truncate to match OpenCode's read tool (read.ts MAX_LINE_LENGTH)
+      const displayed =
+        lines[i].length > MAX_LINE_LENGTH
+          ? lines[i].substring(0, MAX_LINE_LENGTH) + "..."
+          : lines[i]
+      const hash = hashLine(displayed)
       hashes.set(`${i + 1}:${hash}`, lines[i])
     }
     fileHashes.set(filePath, hashes)
@@ -62,6 +105,17 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
     return undefined
   }
 
+  /** Find the actual hash ref for a line number (if it exists) */
+  function getHashRefByLineNumber(
+    hashes: Map<string, string>,
+    lineNum: number,
+  ): string | undefined {
+    for (const ref of hashes.keys()) {
+      if (ref.startsWith(`${lineNum}:`)) return ref
+    }
+    return undefined
+  }
+
   /** Validate a hash reference exists, re-reading file once if stale */
   function validateHash(
     filePath: string,
@@ -69,6 +123,8 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
     hashes: Map<string, string>,
   ): Map<string, string> {
     if (hashes.has(hashRef)) return hashes
+
+    // Re-read file and recompute hashes
     try {
       hashes = computeFileHashes(filePath)
     } catch {
@@ -76,13 +132,28 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
         `Cannot read file "${filePath}" to verify hash references.`,
       )
     }
-    if (!hashes.has(hashRef)) {
-      fileHashes.delete(filePath)
+    if (hashes.has(hashRef)) return hashes
+
+    // Hash not found — provide a diagnostic error message
+    const lineNum = parseInt(hashRef.split(":")[0], 10)
+    const actualRef = getHashRefByLineNumber(hashes, lineNum)
+
+    if (actualRef) {
       throw new Error(
-        `Hash reference "${hashRef}" not found. The file may have changed since last read. Please re-read the file.`,
+        [
+          `Hash reference "${hashRef}" not found.`,
+          `Line ${lineNum} now has hash "${actualRef}".`,
+          `The file has changed since last read. Please re-read the file.`,
+        ].join(" "),
       )
     }
-    return hashes
+    throw new Error(
+      [
+        `Hash reference "${hashRef}" not found.`,
+        `Line ${lineNum} does not exist in the file (${hashes.size} lines total).`,
+        `Please re-read the file.`,
+      ].join(" "),
+    )
   }
 
   /** Ensure hashes exist for a file, computing them if needed */
@@ -301,14 +372,25 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
     // ── Read: tag each line with its content hash ──────────────────────
     "tool.execute.after": async (input, output) => {
       if (input.tool === "edit") {
+        // Recompute hashes from the edited file so subsequent edits
+        // get diagnostic "line N now has hash X" errors instead of
+        // a generic "not found" when using stale refs.
         const filePath = resolvePath(input.args.filePath)
-        fileHashes.delete(filePath)
+        try {
+          computeFileHashes(filePath)
+        } catch {
+          fileHashes.delete(filePath)
+        }
         return
       }
 
       if (input.tool === "apply_patch") {
         for (const fp of pendingPatchFilePaths) {
-          fileHashes.delete(fp)
+          try {
+            computeFileHashes(fp)
+          } catch {
+            fileHashes.delete(fp)
+          }
         }
         pendingPatchFilePaths = []
         return
@@ -392,6 +474,10 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
           "Multiple edits can be batched in a single call:",
           '   `{ edits: [{ filePath: "...", startHash: "3:cc7", content: "..." }, { filePath: "...", afterHash: "7:e2c", content: "..." }] }`',
           "",
+          "IMPORTANT: The hash value (e.g. `cc7`) is the EXACT 3-character code shown after the line number and colon.",
+          "Copy it exactly as shown — do NOT include the `|` separator or any surrounding spaces.",
+          "Example: for line `42:a3f| function hello()`, the hash reference is `42:a3f` (not `42:a3f|`).",
+          "",
           "NEVER pass oldString, newString, or patchText. ALWAYS use the edits array with hash references.",
         ].join("\n"),
       )
@@ -414,13 +500,16 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
 
         // ── Multi-file edits array ──
         if (args.edits && Array.isArray(args.edits)) {
+          // Normalize all hash refs up front
+          const edits = (args.edits as HashlineEdit[]).map(normalizeEdit)
+
           // Group edits by file path (preserving order within each file)
           const editsByFile = new Map<
             string,
             { absPath: string; relPath: string; edits: HashlineEdit[] }
           >()
 
-          for (const edit of args.edits as HashlineEdit[]) {
+          for (const edit of edits) {
             const absPath = resolvePath(edit.filePath)
             let entry = editsByFile.get(absPath)
             if (!entry) {
@@ -485,18 +574,17 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
         let hashes = ensureHashes(filePath)
         if (!hashes) return
 
-        const patchLines: string[] = [
-          "*** Begin Patch",
-          `*** Update File: ${relativePath}`,
-        ]
-
-        const edit: HashlineEdit = {
+        const edit: HashlineEdit = normalizeEdit({
           filePath: args.filePath,
           startHash: args.startHash,
           endHash: args.endHash,
           afterHash: args.afterHash,
           content: args.content,
-        }
+        })
+        const patchLines: string[] = [
+          "*** Begin Patch",
+          `*** Update File: ${relativePath}`,
+        ]
         patchLines.push(...generatePatchChunk(filePath, edit, hashes))
         patchLines.push("*** End Patch")
 
@@ -517,7 +605,8 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
 
       // ── Multi-edit via edits array ──
       if (args.edits && Array.isArray(args.edits)) {
-        const edits = args.edits as HashlineEdit[]
+        // Normalize all hash refs up front
+        const edits = (args.edits as HashlineEdit[]).map(normalizeEdit)
         if (edits.length === 0) return
 
         // All edits must target the same file (edit tool is single-file)
@@ -576,6 +665,11 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
       // Only intercept hashline edits; fall through for normal edits
       if (!args.startHash && !args.afterHash) return
 
+      // Normalize hash refs
+      if (args.startHash) args.startHash = normalizeHashRef(args.startHash)
+      if (args.endHash) args.endHash = normalizeHashRef(args.endHash)
+      if (args.afterHash) args.afterHash = normalizeHashRef(args.afterHash)
+
       // Insert after
       if (args.afterHash) {
         const filePath = resolvePath(args.filePath)
@@ -604,11 +698,8 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
         ? parseInt(args.endHash.split(":")[0], 10)
         : startLine
 
-      if (args.endHash && !hashes.has(args.endHash)) {
-        fileHashes.delete(filePath)
-        throw new Error(
-          `Hash reference "${args.endHash}" not found. The file may have changed since last read. Please re-read the file.`,
-        )
+      if (args.endHash) {
+        hashes = validateHash(filePath, args.endHash, hashes)
       }
 
       if (endLine < startLine) {

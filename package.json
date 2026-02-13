@@ -1,12 +1,38 @@
 {
   "name": "open-hashline",
   "version": "0.2.0",
+  "description": "OpenCode plugin that tags lines with content hashes for reliable LLM edits",
   "type": "module",
   "license": "MIT",
+  "author": "ASidorenkoCode",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ASidorenkoCode/openhashline.git"
+  },
+  "homepage": "https://github.com/ASidorenkoCode/openhashline",
+  "bugs": {
+    "url": "https://github.com/ASidorenkoCode/openhashline/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "hashline",
+    "llm",
+    "code-editing",
+    "ai"
+  ],
   "exports": {
     ".": "./src/index.ts"
   },
-  "dependencies": {
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
     "@opencode-ai/plugin": "latest"
   }
 }

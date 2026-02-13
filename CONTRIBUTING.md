@@ -35,7 +35,7 @@ Add the plugin to your OpenCode config (`~/.config/opencode/config.json`):
 {
   "plugins": {
     "hashline": {
-      "module": "file:///path/to/openhashline/src/index.ts"
+      "module": "file:///absolute/path/to/openhashline/src/index.ts"
     }
   }
 }

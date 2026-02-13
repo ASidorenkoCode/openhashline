@@ -78,29 +78,51 @@ No modifications are made to any built-in tools. Everything works through hooks.
 - [OpenCode](https://github.com/anomalyco/opencode) with the `tool.definition` hook (PR [#4956](https://github.com/anomalyco/opencode/pull/4956))
 - [Bun](https://bun.sh) runtime
 
-### 1. Clone the repository
+### Option 1: Install from npm
 
 ```bash
-git clone https://github.com/ASidorenkoCode/openhashline.git
-cd open-hashline
-bun install
+npm install open-hashline
 ```
 
-### 2. Add to your OpenCode config
+or with Bun:
 
-Add the plugin to your OpenCode configuration file (`~/.config/opencode/config.json` or `.opencode/config.json` in your project):
+```bash
+bun add open-hashline
+```
+
+Then add to your OpenCode config (`~/.config/opencode/config.json` or `.opencode/config.json` in your project):
 
 ```json
 {
   "plugins": {
     "hashline": {
-      "module": "file:///path/to/open-hashline/src/index.ts"
+      "module": "open-hashline"
     }
   }
 }
 ```
 
-### 3. Start OpenCode
+### Option 2: Install from source
+
+```bash
+git clone https://github.com/ASidorenkoCode/openhashline.git
+cd openhashline
+bun install
+```
+
+Then add to your OpenCode config using a file path:
+
+```json
+{
+  "plugins": {
+    "hashline": {
+      "module": "file:///path/to/openhashline/src/index.ts"
+    }
+  }
+}
+```
+
+### Start OpenCode
 
 ```bash
 opencode

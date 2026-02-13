@@ -1,6 +1,6 @@
 {
   "name": "open-hashline",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "OpenCode plugin that tags lines with content hashes for reliable LLM edits",
   "type": "module",
   "license": "MIT",

@@ -21,6 +21,9 @@ function hashLine(content: string): string {
 /** Per-file mapping: hash ref (e.g. "42:a3f") → line content */
 const fileHashes = new Map<string, Map<string, string>>()
 
+/** Track file path for apply_patch hash invalidation across before/after hooks */
+let pendingPatchFilePath: string | undefined
+
 export const HashlinePlugin: Plugin = async ({ directory }) => {
   function resolvePath(filePath: string): string {
     if (path.isAbsolute(filePath)) return path.normalize(filePath)
@@ -40,13 +43,126 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
     return hashes
   }
 
+  /** Get line content by line number from hash map */
+  function getLineByNumber(
+    hashes: Map<string, string>,
+    lineNum: number,
+  ): string | undefined {
+    for (const [ref, content] of hashes) {
+      if (ref.startsWith(`${lineNum}:`)) return content
+    }
+    return undefined
+  }
+
+  /** Validate a hash reference exists, re-reading file once if stale */
+  function validateHash(
+    filePath: string,
+    hashRef: string,
+    hashes: Map<string, string>,
+  ): Map<string, string> {
+    if (hashes.has(hashRef)) return hashes
+    try {
+      hashes = computeFileHashes(filePath)
+    } catch {
+      throw new Error(
+        `Cannot read file "${filePath}" to verify hash references.`,
+      )
+    }
+    if (!hashes.has(hashRef)) {
+      fileHashes.delete(filePath)
+      throw new Error(
+        `Hash reference "${hashRef}" not found. The file may have changed since last read. Please re-read the file.`,
+      )
+    }
+    return hashes
+  }
+
+  /** Ensure hashes exist for a file, computing them if needed */
+  function ensureHashes(filePath: string): Map<string, string> | undefined {
+    let hashes = fileHashes.get(filePath)
+    if (!hashes) {
+      try {
+        hashes = computeFileHashes(filePath)
+      } catch {
+        return undefined
+      }
+    }
+    return hashes
+  }
+
+  /** Collect old lines from a line range, throwing if any are missing */
+  function collectRange(
+    filePath: string,
+    hashes: Map<string, string>,
+    startLine: number,
+    endLine: number,
+  ): string[] {
+    const lines: string[] = []
+    for (let lineNum = startLine; lineNum <= endLine; lineNum++) {
+      const content = getLineByNumber(hashes, lineNum)
+      if (content === undefined) {
+        fileHashes.delete(filePath)
+        throw new Error(
+          `No hash found for line ${lineNum} in range ${startLine}-${endLine}. The file may have changed. Please re-read the file.`,
+        )
+      }
+      lines.push(content)
+    }
+    return lines
+  }
+
+  /** Build hashline parameter schema (shared between edit and apply_patch) */
+  const hashlineParams = z.object({
+    filePath: z
+      .string()
+      .describe("The absolute path to the file to modify"),
+    startHash: z
+      .string()
+      .optional()
+      .describe(
+        'Hash reference for the start line to replace (e.g. "42:a3f")',
+      ),
+    endHash: z
+      .string()
+      .optional()
+      .describe(
+        "Hash reference for the end line (for multi-line range replacement)",
+      ),
+    afterHash: z
+      .string()
+      .optional()
+      .describe(
+        "Hash reference for the line to insert after (no replacement)",
+      ),
+    content: z
+      .string()
+      .describe("The new content to insert or replace with"),
+  })
+
+  const hashlineDescription = [
+    "Edit a file using hashline references from the most recent read output.",
+    "Each line is tagged as `<line>:<hash>| <content>`.",
+    "",
+    "Three operations:",
+    "1. Replace line:  startHash only → replaces that single line",
+    "2. Replace range: startHash + endHash → replaces all lines in range",
+    "3. Insert after:  afterHash → inserts content after that line (no replacement)",
+  ].join("\n")
+
   return {
     // ── Read: tag each line with its content hash ──────────────────────
     "tool.execute.after": async (input, output) => {
       if (input.tool === "edit") {
-        // Invalidate stored hashes after any edit
         const filePath = resolvePath(input.args.filePath)
         fileHashes.delete(filePath)
+        return
+      }
+
+      if (input.tool === "apply_patch") {
+        if (pendingPatchFilePath) {
+          fileHashes.delete(pendingPatchFilePath)
+          pendingPatchFilePath = undefined
+        }
         return
       }
 
@@ -92,43 +208,13 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
       }
     },
 
-    // ── Edit schema: replace oldString/newString with hash references ──
+    // ── Tool schema: replace params with hash references ─────────────
     // Requires PR #4956 (tool.definition hook) to take effect.
+    // OpenCode shows `edit` for Anthropic models, `apply_patch` for Codex.
     "tool.definition": async (input: any, output: any) => {
-      if (input.toolID !== "edit") return
-      output.description = [
-        "Edit a file using hashline references from the most recent read output.",
-        "Each line is tagged as `<line>:<hash>| <content>`.",
-        "",
-        "Three operations:",
-        "1. Replace line:  startHash only → replaces that single line",
-        "2. Replace range: startHash + endHash → replaces all lines in range",
-        "3. Insert after:  afterHash → inserts content after that line (no replacement)",
-      ].join("\n")
-      output.parameters = z.object({
-        filePath: z.string().describe("The absolute path to the file to modify"),
-        startHash: z
-          .string()
-          .optional()
-          .describe(
-            'Hash reference for the start line to replace (e.g. "42:a3f")',
-          ),
-        endHash: z
-          .string()
-          .optional()
-          .describe(
-            "Hash reference for the end line (for multi-line range replacement)",
-          ),
-        afterHash: z
-          .string()
-          .optional()
-          .describe(
-            "Hash reference for the line to insert after (no replacement)",
-          ),
-        content: z
-          .string()
-          .describe("The new content to insert or replace with"),
-      })
+      if (input.toolID !== "edit" && input.toolID !== "apply_patch") return
+      output.description = hashlineDescription
+      output.parameters = hashlineParams
     },
 
     // ── System prompt: instruct the model to use hashline edits ────────
@@ -138,7 +224,7 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
           "## Hashline Edit Mode (MANDATORY)",
           "",
           "When you read a file, each line is tagged with a hash: `<lineNumber>:<hash>| <content>`.",
-          "You MUST use these hash references when editing files. Do NOT use oldString/newString.",
+          "You MUST use these hash references when editing files. Do NOT use oldString/newString or patchText.",
           "",
           "Three operations:",
           "",
@@ -151,13 +237,104 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
           "3. **Insert after** — insert new content after a line (without replacing it):",
           '   `afterHash: "3:cc7", content: "  \\"newKey\\": \\"newValue\\","` ',
           "",
-          "NEVER pass oldString or newString. ALWAYS use startHash/afterHash + content.",
+          "NEVER pass oldString, newString, or patchText. ALWAYS use startHash/afterHash + content.",
         ].join("\n"),
       )
     },
 
-    // ── Edit: resolve hash references before the built-in edit runs ────
+    // ── Edit/Patch: resolve hash references before built-in tool runs ─
     "tool.execute.before": async (input, output) => {
+      // ── apply_patch: resolve hashes → generate patchText ──
+      if (input.tool === "apply_patch") {
+        const args = output.args
+
+        // Raw patchText with no hashline args → let normal patch through
+        if (args.patchText && !args.startHash && !args.afterHash) return
+
+        // No hashline args at all → nothing to do
+        if (!args.startHash && !args.afterHash) return
+
+        const filePath = resolvePath(args.filePath)
+        pendingPatchFilePath = filePath
+        const relativePath = path
+          .relative(directory, filePath)
+          .split(path.sep)
+          .join("/")
+
+        let hashes = ensureHashes(filePath)
+        if (!hashes) return
+
+        const patchLines: string[] = [
+          "*** Begin Patch",
+          `*** Update File: ${relativePath}`,
+        ]
+
+        if (args.afterHash) {
+          // ── Insert after ──
+          hashes = validateHash(filePath, args.afterHash, hashes)
+          const anchorContent = hashes.get(args.afterHash)!
+          const anchorLine = parseInt(args.afterHash.split(":")[0], 10)
+
+          // Use line before anchor as @@ context for positioning
+          const ctx =
+            anchorLine > 1
+              ? (getLineByNumber(hashes, anchorLine - 1) ?? "")
+              : ""
+          patchLines.push(`@@ ${ctx}`)
+          patchLines.push(` ${anchorContent}`) // space = keep line
+          for (const line of args.content.split("\n")) {
+            patchLines.push(`+${line}`)
+          }
+        } else {
+          // ── Replace (single line or range) ──
+          hashes = validateHash(filePath, args.startHash, hashes)
+          if (args.endHash) {
+            hashes = validateHash(filePath, args.endHash, hashes)
+          }
+
+          const startLine = parseInt(args.startHash.split(":")[0], 10)
+          const endLine = args.endHash
+            ? parseInt(args.endHash.split(":")[0], 10)
+            : startLine
+
+          if (endLine < startLine) {
+            throw new Error(
+              `endHash line (${endLine}) must be >= startHash line (${startLine})`,
+            )
+          }
+
+          // Use line before range as @@ context for positioning
+          const ctx =
+            startLine > 1
+              ? (getLineByNumber(hashes, startLine - 1) ?? "")
+              : ""
+          patchLines.push(`@@ ${ctx}`)
+
+          // Old lines (-)
+          const oldLines = collectRange(filePath, hashes, startLine, endLine)
+          for (const line of oldLines) {
+            patchLines.push(`-${line}`)
+          }
+
+          // New lines (+)
+          for (const line of args.content.split("\n")) {
+            patchLines.push(`+${line}`)
+          }
+        }
+
+        patchLines.push("*** End Patch")
+        args.patchText = patchLines.join("\n")
+
+        // Clean up hashline fields — apply_patch only reads patchText
+        delete args.filePath
+        delete args.startHash
+        delete args.endHash
+        delete args.afterHash
+        delete args.content
+        return
+      }
+
+      // ── edit: resolve hashes → oldString/newString ──
       if (input.tool !== "edit") return
 
       const args = output.args
@@ -169,7 +346,7 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
           throw new Error(
             [
               "You must use hashline references to edit this file.",
-              "Use startHash (e.g. \"3:cc7\") instead of oldString.",
+              'Use startHash (e.g. "3:cc7") instead of oldString.',
               "Refer to the hash markers from the read output.",
             ].join(" "),
           )
@@ -184,32 +361,11 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
       // ── Insert after: append content after the referenced line ──
       if (args.afterHash) {
         const filePath = resolvePath(args.filePath)
-        let hashes = fileHashes.get(filePath)
-        if (!hashes) {
-          try {
-            hashes = computeFileHashes(filePath)
-          } catch {
-            return
-          }
-        }
-        if (!hashes.has(args.afterHash)) {
-          try {
-            hashes = computeFileHashes(filePath)
-          } catch {
-            throw new Error(
-              `Cannot read file "${args.filePath}" to verify hash references.`,
-            )
-          }
-          if (!hashes.has(args.afterHash)) {
-            fileHashes.delete(filePath)
-            throw new Error(
-              `Hash reference "${args.afterHash}" not found. The file may have changed since last read. Please re-read the file.`,
-            )
-          }
-        }
+        let hashes = ensureHashes(filePath)
+        if (!hashes) return
+        hashes = validateHash(filePath, args.afterHash, hashes)
 
         const anchorContent = hashes.get(args.afterHash)!
-        // oldString = anchor line, newString = anchor line + new content
         args.oldString = anchorContent
         args.newString = anchorContent + "\n" + args.content
 
@@ -219,34 +375,11 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
       }
 
       const filePath = resolvePath(args.filePath)
-      let hashes = fileHashes.get(filePath)
+      let hashes = ensureHashes(filePath)
+      if (!hashes) return
 
-      // No stored hashes → try reading the file fresh
-      if (!hashes) {
-        try {
-          hashes = computeFileHashes(filePath)
-        } catch {
-          // Can't read file — fall through to normal edit behavior
-          return
-        }
-      }
-
-      // Validate startHash; if stale, re-read and retry once
-      if (!hashes.has(args.startHash)) {
-        try {
-          hashes = computeFileHashes(filePath)
-        } catch {
-          throw new Error(
-            `Cannot read file "${args.filePath}" to verify hash references.`,
-          )
-        }
-        if (!hashes.has(args.startHash)) {
-          fileHashes.delete(filePath)
-          throw new Error(
-            `Hash reference "${args.startHash}" not found. The file may have changed since last read. Please re-read the file.`,
-          )
-        }
-      }
+      // Validate startHash
+      hashes = validateHash(filePath, args.startHash, hashes)
 
       const startLine = parseInt(args.startHash.split(":")[0], 10)
       const endLine = args.endHash
@@ -268,24 +401,7 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
       }
 
       // Build oldString from the line range
-      const rangeLines: string[] = []
-      for (let lineNum = startLine; lineNum <= endLine; lineNum++) {
-        let found = false
-        for (const [ref, content] of hashes) {
-          if (ref.startsWith(`${lineNum}:`)) {
-            rangeLines.push(content)
-            found = true
-            break
-          }
-        }
-        if (!found) {
-          fileHashes.delete(filePath)
-          throw new Error(
-            `No hash found for line ${lineNum} in range ${startLine}-${endLine}. The file may have changed. Please re-read the file.`,
-          )
-        }
-      }
-
+      const rangeLines = collectRange(filePath, hashes, startLine, endLine)
       const oldString = rangeLines.join("\n")
 
       // Set resolved args for the built-in edit tool

@@ -39,9 +39,9 @@ The plugin resolves hashes back to actual content before the built-in edit tool 
 
 1. **Read** — The `tool.execute.after` hook transforms read output, tagging each line as `<line>:<hash>| <content>` and storing a per-file hash map in memory.
 
-2. **Edit schema** — The `tool.definition` hook replaces the edit tool's parameters with `startHash`, `endHash`, `afterHash`, and `content` (instead of `oldString`/`newString`).
+2. **Edit schema** — The `tool.definition` hook replaces the edit tool's parameters (and `apply_patch` for Codex models) with `startHash`, `endHash`, `afterHash`, and `content`.
 
-3. **Edit resolve** — The `tool.execute.before` hook intercepts hash-based edits, resolves references back to `oldString`/`newString`, and passes them to the built-in edit tool.
+3. **Edit resolve** — The `tool.execute.before` hook intercepts hash-based edits and resolves them to the format the underlying tool expects — `oldString`/`newString` for `edit` (Anthropic), or generated `patchText` for `apply_patch` (Codex).
 
 4. **System prompt** — The `experimental.chat.system.transform` hook injects instructions so the model knows to use hashline references.
 
@@ -146,7 +146,8 @@ Collisions are rare and disambiguated by line number — the full reference is `
 | Scenario | Behavior |
 |---|---|
 | **Stale hashes** | File changed since last read — edit rejected, model told to re-read |
-| **File not previously read** | Falls through to normal `oldString`/`newString` edit |
+| **File not previously read** | Falls through to normal `oldString`/`newString` or `patchText` edit |
+| **Codex models** | Hash refs resolved to `patchText` format for `apply_patch` tool |
 | **Hash collision** | Line number provides disambiguation |
 | **Partial/offset reads** | Hashes merge with existing stored hashes for the file |
 | **Edit invalidation** | Stored hashes cleared after any edit to prevent stale references |

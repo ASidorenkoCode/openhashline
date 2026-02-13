@@ -81,7 +81,7 @@ No modifications are made to any built-in tools. Everything works through hooks.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/ASidorenkoCode/open-hashline.git
+git clone https://github.com/ASidorenkoCode/openhashline.git
 cd open-hashline
 bun install
 ```

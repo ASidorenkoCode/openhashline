@@ -69,6 +69,22 @@ No modifications are made to any built-in tools. Everything works through hooks.
 { "afterHash": "7:e2c", "content": "  \"newField\": \"value\"," }
 ```
 
+### 4. Multi-file edit (Codex / `apply_patch`)
+
+Codex models use the `apply_patch` tool which accepts an `edits` array — multiple files and multiple edits per file in a single call:
+
+```json
+{
+  "edits": [
+    { "filePath": "/project/src/config.ts", "startHash": "3:cc7", "content": "  version: \"2.0.0\"," },
+    { "filePath": "/project/src/config.ts", "afterHash": "5:e60", "content": "  debug: true," },
+    { "filePath": "/project/src/index.ts", "startHash": "10:a1b", "endHash": "12:f3d", "content": "// refactored" }
+  ]
+}
+```
+
+Edits to the same file are grouped into a single patch section with multiple `@@` chunks, sorted by line number.
+
 ---
 
 ## Installation

@@ -78,7 +78,7 @@ No modifications are made to any built-in tools. Everything works through hooks.
 - [OpenCode](https://github.com/anomalyco/opencode) with the `tool.definition` hook (PR [#4956](https://github.com/anomalyco/opencode/pull/4956))
 - [Bun](https://bun.sh) runtime
 
-### Option 1: Install from npm
+### Option 1: Install from npm (recommended)
 
 ```bash
 npm install open-hashline
@@ -90,17 +90,7 @@ or with Bun:
 bun add open-hashline
 ```
 
-Then add to your OpenCode config (`~/.config/opencode/config.json` or `.opencode/config.json` in your project):
-
-```json
-{
-  "plugins": {
-    "hashline": {
-      "module": "open-hashline"
-    }
-  }
-}
-```
+The postinstall script automatically adds `open-hashline` to your project's `.opencode/opencode.json` config. No manual configuration needed.
 
 ### Option 2: Install from source
 

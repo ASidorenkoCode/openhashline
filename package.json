@@ -1,6 +1,6 @@
 {
   "name": "open-hashline",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "OpenCode plugin that tags lines with content hashes for reliable LLM edits",
   "type": "module",
   "license": "MIT",
@@ -21,11 +21,15 @@
     "code-editing",
     "ai"
   ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "files": [
     "src",
+    "scripts",
     "LICENSE",
     "README.md"
   ],

@@ -175,8 +175,62 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
     return chunk
   }
 
-  /** Build hashline parameter schema for edit (single file) */
-  const editParams = z.object({
+  /**
+   * Apply multiple hashline edits to a file's lines array (in-place).
+   * Edits are sorted descending by line number and applied bottom-to-top
+   * so earlier indices aren't affected by insertions/deletions.
+   */
+  function applyEditsToLines(
+    filePath: string,
+    edits: HashlineEdit[],
+    lines: string[],
+    hashes: Map<string, string>,
+  ): void {
+    // Sort descending by line number (apply from bottom to top)
+    const sorted = [...edits].sort((a, b) => {
+      const lineA = parseInt(
+        (a.startHash || a.afterHash || "0").split(":")[0],
+        10,
+      )
+      const lineB = parseInt(
+        (b.startHash || b.afterHash || "0").split(":")[0],
+        10,
+      )
+      return lineB - lineA
+    })
+
+    for (const edit of sorted) {
+      if (edit.afterHash) {
+        hashes = validateHash(filePath, edit.afterHash, hashes)
+        const anchorLine = parseInt(edit.afterHash.split(":")[0], 10)
+        const newLines = edit.content.split("\n")
+        // Insert after anchorLine (1-indexed → splice at anchorLine)
+        lines.splice(anchorLine, 0, ...newLines)
+      } else if (edit.startHash) {
+        hashes = validateHash(filePath, edit.startHash, hashes)
+        if (edit.endHash) {
+          hashes = validateHash(filePath, edit.endHash, hashes)
+        }
+        const startLine = parseInt(edit.startHash.split(":")[0], 10)
+        const endLine = edit.endHash
+          ? parseInt(edit.endHash.split(":")[0], 10)
+          : startLine
+
+        if (endLine < startLine) {
+          throw new Error(
+            `endHash line (${endLine}) must be >= startHash line (${startLine})`,
+          )
+        }
+
+        const newLines = edit.content.split("\n")
+        // Replace lines startLine..endLine (1-indexed)
+        lines.splice(startLine - 1, endLine - startLine + 1, ...newLines)
+      }
+    }
+  }
+
+  /** Hashline edit schema — shared shape for individual edits */
+  const editShape = {
     filePath: z
       .string()
       .describe("The absolute path to the file to modify"),
@@ -201,47 +255,32 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
     content: z
       .string()
       .describe("The new content to insert or replace with"),
+  }
+
+  /** Schema for edit tool — edits array, single file per call */
+  const editParams = z.object({
+    edits: z
+      .array(z.object(editShape))
+      .describe(
+        "Array of edits to apply. All edits must target the same file.",
+      ),
   })
 
-  /** Build hashline parameter schema for apply_patch (multi-file) */
+  /** Schema for apply_patch tool — edits array, multi-file supported */
   const patchParams = z.object({
     edits: z
-      .array(
-        z.object({
-          filePath: z
-            .string()
-            .describe("The absolute path to the file to modify"),
-          startHash: z
-            .string()
-            .optional()
-            .describe(
-              'Hash reference for the start line to replace (e.g. "42:a3f")',
-            ),
-          endHash: z
-            .string()
-            .optional()
-            .describe(
-              "Hash reference for the end line (for multi-line range replacement)",
-            ),
-          afterHash: z
-            .string()
-            .optional()
-            .describe(
-              "Hash reference for the line to insert after (no replacement)",
-            ),
-          content: z
-            .string()
-            .describe("The new content to insert or replace with"),
-        }),
-      )
-      .describe("Array of edits to apply. Multiple files and multiple edits per file are supported."),
+      .array(z.object(editShape))
+      .describe(
+        "Array of edits to apply. Multiple files and multiple edits per file are supported.",
+      ),
   })
 
   const editDescription = [
     "Edit a file using hashline references from the most recent read output.",
     "Each line is tagged as `<line>:<hash>| <content>`.",
+    "Pass an `edits` array with one or more edits (all must target the same file).",
     "",
-    "Three operations:",
+    "Three operations per edit:",
     "1. Replace line:  startHash only → replaces that single line",
     "2. Replace range: startHash + endHash → replaces all lines in range",
     "3. Insert after:  afterHash → inserts content after that line (no replacement)",
@@ -339,21 +378,21 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
           "When you read a file, each line is tagged with a hash: `<lineNumber>:<hash>| <content>`.",
           "You MUST use these hash references when editing files. Do NOT use oldString/newString or patchText.",
           "",
-          "Three operations:",
+          "Pass an `edits` array with one or more edits. Each edit has: filePath, and one of:",
           "",
-          "1. **Replace line** — replace a single line:",
-          '   `startHash: "3:cc7", content: "  \\"version\\": \\"1.0.0\\","` ',
+          "1. **Replace line** — `startHash` + `content`:",
+          '   `{ filePath: "...", startHash: "3:cc7", content: "new line" }`',
           "",
-          "2. **Replace range** — replace lines startHash through endHash:",
-          '   `startHash: "3:cc7", endHash: "5:e60", content: "line3\\nline4\\nline5"`',
+          "2. **Replace range** — `startHash` + `endHash` + `content`:",
+          '   `{ filePath: "...", startHash: "3:cc7", endHash: "5:e60", content: "line3\\nline4\\nline5" }`',
           "",
-          "3. **Insert after** — insert new content after a line (without replacing it):",
-          '   `afterHash: "3:cc7", content: "  \\"newKey\\": \\"newValue\\","` ',
+          "3. **Insert after** — `afterHash` + `content`:",
+          '   `{ filePath: "...", afterHash: "3:cc7", content: "  inserted line" }`',
           "",
-          "You can edit multiple files in a single call by passing an `edits` array.",
-          "Each edit specifies its own filePath and hash references.",
+          "Multiple edits can be batched in a single call:",
+          '   `{ edits: [{ filePath: "...", startHash: "3:cc7", content: "..." }, { filePath: "...", afterHash: "7:e2c", content: "..." }] }`',
           "",
-          "NEVER pass oldString, newString, or patchText. ALWAYS use startHash/afterHash + content.",
+          "NEVER pass oldString, newString, or patchText. ALWAYS use the edits array with hash references.",
         ].join("\n"),
       )
     },
@@ -365,7 +404,12 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
         const args = output.args
 
         // Raw patchText with no hashline args → let normal patch through
-        if (args.patchText && !args.edits && !args.startHash && !args.afterHash)
+        if (
+          args.patchText &&
+          !args.edits &&
+          !args.startHash &&
+          !args.afterHash
+        )
           return
 
         // ── Multi-file edits array ──
@@ -471,6 +515,49 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
 
       const args = output.args
 
+      // ── Multi-edit via edits array ──
+      if (args.edits && Array.isArray(args.edits)) {
+        const edits = args.edits as HashlineEdit[]
+        if (edits.length === 0) return
+
+        // All edits must target the same file (edit tool is single-file)
+        const filePath = resolvePath(edits[0].filePath)
+        const uniqueFiles = new Set(edits.map((e) => resolvePath(e.filePath)))
+        if (uniqueFiles.size > 1) {
+          throw new Error(
+            "The edit tool supports one file per call. Make separate calls for each file.",
+          )
+        }
+
+        let hashes = ensureHashes(filePath)
+        if (!hashes) return
+
+        // Validate all hashes up front
+        for (const edit of edits) {
+          if (edit.afterHash) {
+            hashes = validateHash(filePath, edit.afterHash, hashes)
+          } else if (edit.startHash) {
+            hashes = validateHash(filePath, edit.startHash, hashes)
+            if (edit.endHash)
+              hashes = validateHash(filePath, edit.endHash, hashes)
+          }
+        }
+
+        // Read original file, apply all edits, produce oldString/newString
+        const originalContent = fs.readFileSync(filePath, "utf-8")
+        const lines = originalContent.split("\n")
+        applyEditsToLines(filePath, edits, lines, hashes)
+        const newContent = lines.join("\n")
+
+        args.filePath = filePath
+        args.oldString = originalContent
+        args.newString = newContent
+        delete args.edits
+        return
+      }
+
+      // ── Single-edit fallback (backwards compat) ──
+
       // Reject oldString edits for files we have hashes for — force hashline usage
       if (args.oldString && !args.startHash) {
         const filePath = resolvePath(args.filePath)
@@ -483,14 +570,13 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
             ].join(" "),
           )
         }
-        // No hashes for this file — allow normal edit
         return
       }
 
       // Only intercept hashline edits; fall through for normal edits
       if (!args.startHash && !args.afterHash) return
 
-      // ── Insert after: append content after the referenced line ──
+      // Insert after
       if (args.afterHash) {
         const filePath = resolvePath(args.filePath)
         let hashes = ensureHashes(filePath)
@@ -506,11 +592,11 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
         return
       }
 
+      // Replace (single line or range)
       const filePath = resolvePath(args.filePath)
       let hashes = ensureHashes(filePath)
       if (!hashes) return
 
-      // Validate startHash
       hashes = validateHash(filePath, args.startHash, hashes)
 
       const startLine = parseInt(args.startHash.split(":")[0], 10)
@@ -518,7 +604,6 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
         ? parseInt(args.endHash.split(":")[0], 10)
         : startLine
 
-      // Validate endHash
       if (args.endHash && !hashes.has(args.endHash)) {
         fileHashes.delete(filePath)
         throw new Error(
@@ -532,15 +617,10 @@ export const HashlinePlugin: Plugin = async ({ directory }) => {
         )
       }
 
-      // Build oldString from the line range
       const rangeLines = collectRange(filePath, hashes, startLine, endLine)
-      const oldString = rangeLines.join("\n")
-
-      // Set resolved args for the built-in edit tool
-      args.oldString = oldString
+      args.oldString = rangeLines.join("\n")
       args.newString = args.content
 
-      // Remove hashline-specific fields so the built-in edit doesn't choke
       delete args.startHash
       delete args.endHash
       delete args.content

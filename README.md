@@ -198,9 +198,11 @@ The hash-tagged read output, custom tool schemas, and system prompt injection ad
 
 *\*Includes failed multi-edit run*
 
-### Large File Scaling — Minimax M2.5 Free
+### Large File Scaling
 
 The benchmarks above use small files (21-115 lines). How does OpenSlimedit perform on real-world file sizes?
+
+#### Minimax M2.5 Free
 
 | File Size | Baseline | OpenSlimedit | Saved |
 |---|---|---|---|
@@ -209,7 +211,16 @@ The benchmarks above use small files (21-115 lines). How does OpenSlimedit perfo
 | 6k lines | 29,422 | 25,747 | **-12.5%** |
 | 10k lines | 29,405 | 25,742 | **-12.5%** |
 
-Savings are smaller on large files (11-19%) because the file content dominates the token count — tool description compression is a smaller proportion of the total. Still a consistent win at every file size.
+#### GPT 5.3 Codex
+
+| File Size | Baseline | OpenSlimedit | Saved |
+|---|---|---|---|
+| 1k lines | 15,000 | 22,034 | +46.9% |
+| 3k lines | 38,712 | 28,686 | **-25.9%** |
+| 6k lines | 29,697 | 32,635 | +9.9% |
+| 10k lines | 28,136 | 28,162 | +0.1% |
+
+Minimax shows consistent savings (11-19%) at all file sizes. GPT 5.3 Codex results are mixed on large files — significant savings at 3k lines but regressions at 1k and 6k. With large files, the file content dominates the token count and tool description compression is a smaller proportion of the total.
 
 ### Key Findings
 
@@ -315,7 +326,7 @@ Savings are smaller on large files (11-19%) because the file content dominates t
 </details>
 
 <details>
-<summary>Raw data — Large file scaling runs (Minimax M2.5 Free)</summary>
+<summary>Raw data — Large file scaling runs</summary>
 
 | Mode | Model | Case | Time | Input | Output | Total | Success |
 |---|---|---|---|---|---|---|---|
@@ -327,6 +338,14 @@ Savings are smaller on large files (11-19%) because the file content dominates t
 | openslimedit | minimax-m2.5-free | 3k-lines | 45,621 ms | 25,247 | 585 | 25,832 | yes |
 | openslimedit | minimax-m2.5-free | 6k-lines | 33,315 ms | 25,158 | 589 | 25,747 | yes |
 | openslimedit | minimax-m2.5-free | 10k-lines | 19,114 ms | 25,173 | 569 | 25,742 | yes |
+| baseline | gpt-5.3-codex | 1k-lines | 21,304 ms | 13,946 | 1,054 | 15,000 | yes |
+| baseline | gpt-5.3-codex | 3k-lines | 25,549 ms | 37,555 | 1,157 | 38,712 | yes |
+| baseline | gpt-5.3-codex | 6k-lines | 29,642 ms | 28,402 | 1,295 | 29,697 | yes |
+| baseline | gpt-5.3-codex | 10k-lines | 21,031 ms | 27,148 | 988 | 28,136 | yes |
+| openslimedit | gpt-5.3-codex | 1k-lines | 25,150 ms | 20,806 | 1,228 | 22,034 | yes |
+| openslimedit | gpt-5.3-codex | 3k-lines | 29,513 ms | 27,556 | 1,130 | 28,686 | yes |
+| openslimedit | gpt-5.3-codex | 6k-lines | 32,021 ms | 31,320 | 1,315 | 32,635 | yes |
+| openslimedit | gpt-5.3-codex | 10k-lines | 21,321 ms | 27,073 | 1,089 | 28,162 | yes |
 
 </details>
 

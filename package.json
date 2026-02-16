@@ -21,15 +21,12 @@
     "code-editing",
     "ai"
   ],
-  "scripts": {
-    "postinstall": "node scripts/postinstall.js"
-  },
+  "scripts": {},
   "exports": {
     ".": "./src/index.ts"
   },
   "files": [
     "src",
-    "scripts",
     "LICENSE",
     "README.md"
   ],

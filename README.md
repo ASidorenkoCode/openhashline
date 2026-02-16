@@ -49,39 +49,11 @@ No custom tools. No system prompt injection. No modifications to built-in tool b
 - [OpenCode](https://github.com/anomalyco/opencode) with plugin hook support
 - [Bun](https://bun.sh) runtime
 
-### Option 1: Install from npm
-
 ```bash
 npm install openslimedit
 ```
 
-or with Bun:
-
-```bash
-bun add openslimedit
-```
-
-The postinstall script automatically adds the plugin to your project's `.opencode/opencode.json` config.
-
-### Option 2: Install from source
-
-```bash
-git clone https://github.com/ASidorenkoCode/openslimedit.git
-cd openslimedit
-bun install
-```
-
-Then add it to your OpenCode config using the `plugin` array:
-
-```json
-{
-  "plugin": [
-    "file:///path/to/openslimedit/src/index.ts"
-  ]
-}
-```
-
-If you installed from npm, use the package entry instead:
+Then add it to your OpenCode config (`.opencode/opencode.json` or `opencode.jsonc`):
 
 ```json
 {
@@ -91,13 +63,7 @@ If you installed from npm, use the package entry instead:
 }
 ```
 
-### Start OpenCode
-
-```bash
-opencode
-```
-
-That's it. The plugin activates automatically and reduces token usage on every interaction.
+Start OpenCode and the plugin activates automatically.
 
 ---
 
@@ -396,9 +362,8 @@ Minimax shows consistent savings (11-19%) at all file sizes. GPT 5.3 Codex shows
 ```
 openslimedit/
 ├── src/
-│   └── index.ts       # Plugin implementation (single file)
+│   └── index.ts      # Plugin implementation (single file)
 ├── package.json
-├── tsconfig.json
 ├── LICENSE
 └── README.md
 ```

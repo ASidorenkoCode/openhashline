@@ -1,6 +1,6 @@
 {
   "name": "openslimedit",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "OpenCode plugin that reduces token usage by up to 33% — compresses tool descriptions, compacts read output, adds line-range edit support",
   "type": "module",
   "license": "MIT",

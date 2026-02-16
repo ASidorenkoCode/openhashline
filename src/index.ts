@@ -15,6 +15,7 @@ export const OpenSlimeditPlugin: Plugin = async ({ directory }) => {
       const SLIM: Record<string, string> = {
         read: "Read file content.",
         edit: "Edit file. oldString can be line range '55-64'.",
+        apply_patch: "Apply a patch to files.",
         write: "Write file.",
         bash: "Run shell command.",
         glob: "Find files.",

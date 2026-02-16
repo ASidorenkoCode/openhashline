@@ -1,7 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import * as fs from "fs"
 import * as path from "path"
-
 const LINE_RANGE_RE = /^(\d+)(?:\s*-\s*(\d+))?$/
 
 export const OpenSlimeditPlugin: Plugin = async ({ directory }) => {
@@ -11,7 +10,7 @@ export const OpenSlimeditPlugin: Plugin = async ({ directory }) => {
   }
 
   return {
-    // Aggressively shorten ALL tool descriptions
+    // Shorten tool descriptions + strip parameter descriptions
     "tool.definition": async (input: any, output: any) => {
       const SLIM: Record<string, string> = {
         read: "Read file content.",
@@ -28,8 +27,16 @@ export const OpenSlimeditPlugin: Plugin = async ({ directory }) => {
       }
     },
 
-    // Compact read output: shorten path, strip footer
+    // Compact tool output: shorten read paths, strip footer, compress edit results
     "tool.execute.after": async (input, output) => {
+      // Compress edit output
+      if (input.tool === "edit") {
+        if (output.output.startsWith("Edit applied successfully.")) {
+          output.output = "OK"
+        }
+        return
+      }
+
       if (input.tool !== "read") return
       if (output.output.includes("<type>directory</type>")) return
 
